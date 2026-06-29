@@ -1,0 +1,39 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Build / distribution
+*.egg-info/
+dist/
+build/
+*.egg
+MANIFEST
+
+# Pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Profiler traces and large captured artifacts
+# (written by validation/runner.py — never commit these)
+artifacts/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
+
+# Editor directories
+.idea/
+.vscode/
+*.swp
