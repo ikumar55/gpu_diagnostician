@@ -78,10 +78,14 @@ class _CpuSampler:
         return sum(self._samples) / len(self._samples)
 
     def _loop(self) -> None:
-        psutil.cpu_percent(interval=None)  # discard first call (initialises counter)
+        psutil.cpu_percent(percpu=True)  # discard first call (initialises per-core counters)
         while not self._stop.is_set():
-            self._samples.append(psutil.cpu_percent(interval=None))
-            time.sleep(0.2)
+            # Max across all cores: one pegged core on a 2-core VM reads as
+            # ~50% system-wide but 100% per-core. Max gives the right signal.
+            per_core = psutil.cpu_percent(percpu=True)
+            if per_core:
+                self._samples.append(max(per_core))
+            time.sleep(0.05)  # 20 Hz — fast enough to catch short bursts
 
 
 # ── GPU utilisation sampler (CUDA only) ──────────────────────────────────────
@@ -129,6 +133,7 @@ def _parse_trace(trace_path: Path, n_steps: int) -> Dict:
     All values are None if the trace file doesn't exist or has no CUDA events.
     """
     null_result = {
+        "gpu_util_pct": None,
         "gpu_idle_fraction": None,
         "tiny_kernel_fraction": None,
         "mem_bound_fraction": None,
@@ -146,12 +151,17 @@ def _parse_trace(trace_path: Path, n_steps: int) -> Dict:
 
     # ── Collect CUDA kernel durations and categories ──────────────────────────
     kernel_durations: List[float] = []
-    kernel_categories: List[str] = []
     sync_count = 0
     compute_us = 0.0
     memory_us = 0.0
 
     TINY_US = 10.0
+
+    # D2H sync keywords — PyTorch 2.x uses "gpu_memcpy" cat; older used "cuda_memcpy".
+    # We also detect .item() calls from the CPU-op side as a reliable fallback.
+    _D2H_MEMCPY_CATS = {"gpu_memcpy", "cuda_memcpy"}
+    _D2H_NAME_KEYWORDS = ("DtoH", "D2H", "Device -> H", "DeviceToHost")
+    _ITEM_OP_NAMES = {"aten::item", "aten::_local_scalar_dense"}
 
     for ev in events:
         cat = ev.get("cat", "")
@@ -161,13 +171,17 @@ def _parse_trace(trace_path: Path, n_steps: int) -> Dict:
         if cat == "kernel":
             kernel_durations.append(dur_us)
             c = _categorise_kernel(name)
-            kernel_categories.append(c)
             if c == "compute":
                 compute_us += dur_us
             else:
                 memory_us += dur_us
 
-        elif cat == "cuda_memcpy" and "DtoH" in name:
+        # GPU-side D2H copy (PyTorch 2.x: cat="gpu_memcpy"; older: cat="cuda_memcpy")
+        elif cat in _D2H_MEMCPY_CATS and any(kw in name for kw in _D2H_NAME_KEYWORDS):
+            sync_count += 1
+
+        # CPU-side fallback: aten::item / _local_scalar_dense are definitive .item() calls
+        elif cat in ("cpu_op", "python_function") and name in _ITEM_OP_NAMES:
             sync_count += 1
 
     if not kernel_durations:
@@ -179,6 +193,19 @@ def _parse_trace(trace_path: Path, n_steps: int) -> Dict:
 
     total_kernel_us = compute_us + memory_us
     mem_bound_fraction = memory_us / total_kernel_us if total_kernel_us > 0 else None
+
+    # ── GPU utilisation from trace ────────────────────────────────────────────
+    # Sum of all kernel durations divided by total profiler wall time.
+    # Much more reliable than pynvml sampling for short training loops:
+    # pynvml polls every ~200ms but each step may finish in <5ms, so most
+    # samples catch the GPU idle between steps.
+    all_ts = [ev["ts"] for ev in events if "ts" in ev]
+    all_end = [ev["ts"] + ev.get("dur", 0) for ev in events if "ts" in ev]
+    if all_ts and all_end:
+        wall_span_us = max(all_end) - min(all_ts)
+        gpu_util_pct = (compute_us + memory_us) / wall_span_us * 100 if wall_span_us > 0 else None
+    else:
+        gpu_util_pct = None
 
     # ── Idle fraction: gaps between consecutive GPU kernel end→start ──────────
     # Build a timeline of (start, end) for each kernel event on GPU.
@@ -215,6 +242,7 @@ def _parse_trace(trace_path: Path, n_steps: int) -> Dict:
     )[:10]
 
     return {
+        "gpu_util_pct": gpu_util_pct,
         "gpu_idle_fraction": gpu_idle_fraction,
         "tiny_kernel_fraction": tiny_kernel_fraction,
         "mem_bound_fraction": mem_bound_fraction,
@@ -269,12 +297,17 @@ def _capture(script_name: str, script_module) -> Dict:
     mean_step_ms = sum(step_times) / len(step_times) if step_times else None
 
     gpu_features = _parse_trace(trace_path, n_steps=len(step_times)) if _CUDA else {
+        "gpu_util_pct": None,
         "gpu_idle_fraction": None,
         "tiny_kernel_fraction": None,
         "mem_bound_fraction": None,
         "sync_events_per_step": None,
         "top_kernels": None,
     }
+
+    # gpu_util_pct: prefer trace-derived value (accurate for short runs); fall
+    # back to pynvml sample if the trace parse yielded nothing.
+    gpu_util_pct = gpu_features.pop("gpu_util_pct", None) or gpu_util
 
     features = {
         "script": script_name,
@@ -286,7 +319,7 @@ def _capture(script_name: str, script_module) -> Dict:
         "mean_step_ms": mean_step_ms,
         "step_times_ms": step_times,
         # CUDA-only features
-        "gpu_util_pct": gpu_util,
+        "gpu_util_pct": gpu_util_pct,
         **gpu_features,
     }
 

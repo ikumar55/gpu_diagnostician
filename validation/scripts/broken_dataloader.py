@@ -21,7 +21,9 @@ BATCH_SIZE = 64
 NUM_WORKERS = 0          # ← the bug
 INPUT_DIM = 784
 NUM_CLASSES = 10
-_CPU_BURN_ITERS = 8_000  # iterations of sqrt to burn ~5ms per sample on a modern CPU
+_CPU_BURN_ITERS = 30_000  # iterations of sqrt; tuned so one CPU core is saturated
+# on a multi-core Colab VM. psutil now reports per-core max, so one hot core
+# reads as ~100% regardless of how many other cores are idle.
 
 
 class SlowFakeDataset(Dataset):

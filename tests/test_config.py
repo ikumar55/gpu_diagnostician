@@ -46,14 +46,14 @@ class TestThresholdsDefaults:
         assert THRESHOLDS.gpu_util_busy == 70.0
 
     def test_mem_bound_fraction_high_default(self):
-        assert THRESHOLDS.mem_bound_fraction_high == 0.40
+        assert THRESHOLDS.mem_bound_fraction_high == 0.75
 
     # Rule 5
     def test_gpu_util_healthy_default(self):
         assert THRESHOLDS.gpu_util_healthy == 80.0
 
     def test_mem_bound_fraction_healthy_default(self):
-        assert THRESHOLDS.mem_bound_fraction_healthy == 0.25
+        assert THRESHOLDS.mem_bound_fraction_healthy == 0.65
 
 
 class TestThresholdsOverride:

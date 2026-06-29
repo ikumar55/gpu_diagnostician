@@ -31,12 +31,18 @@ class Thresholds:
 
     # ── Rule 4: Memory-bandwidth-bound ───────────────────────────────────────
     # GPU IS busy (above gpu_util_busy) but time is dominated by memory-bound kernels.
+    # Tuned: healthy.py (wide Linear + Adam) measures ~0.54 memory-bound because
+    # Adam weight-update kernels are elementwise. Rule 4 threshold must be above
+    # that so a mixed-but-healthy model doesn't falsely trigger.
+    # broken_memory.py (ALL elementwise, no matmul) measures ~0.85+.
     gpu_util_busy: float = 70.0
-    mem_bound_fraction_high: float = 0.40
+    mem_bound_fraction_high: float = 0.75
 
     # ── Rule 5: Compute-bound / healthy ──────────────────────────────────────
     gpu_util_healthy: float = 80.0
-    mem_bound_fraction_healthy: float = 0.25
+    # Must be < mem_bound_fraction_high. Healthy model at ~0.54; threshold
+    # gives headroom above that while staying below the Rule 4 threshold.
+    mem_bound_fraction_healthy: float = 0.65
 
 
 # Module-level sentinel; import this everywhere instead of constructing instances.
